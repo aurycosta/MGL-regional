@@ -8,6 +8,8 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 
     <style>
         body { background-color: #f1f5f9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
@@ -76,8 +78,13 @@
                     <label class="text-[10px] font-bold">MÊS DE REFERÊNCIA</label>
                     <input type="month" id="monthPicker" class="border-2 border-black p-1 text-sm font-bold">
                 </div>
-                <button onclick="takeScreenshot()" class="bg-blue-600 text-white px-3 py-2 text-xs rounded font-bold shadow-md hover:bg-blue-700">📸 PRINT</button>
+                
                 <button onclick="generatePDF()" class="bg-red-700 text-white px-3 py-2 text-xs rounded font-bold shadow-md hover:bg-red-800">📄 PDF</button>
+                
+                <label id="btn-import" class="bg-purple-700 cursor-pointer text-white px-3 py-2 text-xs rounded font-bold shadow-md hover:bg-purple-800 hidden">
+                    <input type="file" accept=".xlsx, .xls" class="hidden" onchange="importXLSX(event)"> 📥 IMPORTAR
+                </label>
+
                 <button onclick="showAllStores()" class="bg-gray-600 text-white px-3 py-2 text-xs rounded font-bold">👁 MOSTRAR OCULTAS</button>
             </div>
         </div>
@@ -115,13 +122,13 @@
 
         const LOJAS_INICIAIS = {
             claudio: ["001-AFL", "002-APIACAS", "003-PAR", "010-GTA", "011-PEIXOTO", "015-TNN", "502-CA-GTA-C", "503-CA-SNP-J", "506-CA-SNP-A", "508-CA-MTP-I"],
-            lekssey: ["004-SORBH", "005-LRVCEN", "006-MUTUM", "008-LRVVEN", "009-TAPURAH", "012-SORBR","013-DNSOR","016-DNMUTUM", "018-SOR-RDS", "505-CA-SORRI"]
+            lekssey: ["004-SORBH", "005-LRVCEN", "006-MUTUM", "008-LRVVEN", "009-TAPURAH", "012-SORBR", "013-DNSOR", "016-DNMUTUM", "018-SOR-RDS", "505-CA-SORRI"]
         };
 
         window.currentTab = 'MGL';
         window.currentMonthKey = new Date().toISOString().substring(0, 7);
         window.db = { MGL: {}, QUEBRA: {}, MESA: {} };
-        window.hiddenStoresData = { MGL: [], QUEBRA: [], MESA: [] };
+        window.hiddenStoresData = { MGL: [], QUEBRA: [], MESA: {} };
         window.fdsSettings = { MGL: false, QUEBRA: false, MESA: false };
 
         setTimeout(() => { document.getElementById('loading-overlay').style.display = 'none'; }, 5000);
@@ -152,6 +159,13 @@
             const titles = { 'MGL': 'Minha Gestão de Loja (MGL)', 'QUEBRA': 'Quebra Diária', 'MESA': 'Mesa Quente' };
             document.getElementById('main-title').innerText = titles[tabName];
             ['MGL', 'QUEBRA', 'MESA'].forEach(t => document.getElementById(`btn-${t}`).classList.toggle('tab-active', t === tabName));
+            
+            if(tabName === 'MGL') {
+                document.getElementById('btn-import').classList.add('hidden');
+            } else {
+                document.getElementById('btn-import').classList.remove('hidden');
+            }
+
             checkMonthStructure();
             renderAll();
         };
@@ -176,24 +190,70 @@
             }
         }
 
-        window.addNewStore = () => {
-            const name = prompt("Nome da Nova Unidade (Ex: 020-NOVALOJA):");
-            if (!name) return;
-            const reg = prompt("Para qual Regional? (1 para Claudio, 2 para Lekssey):");
-            const regionKey = reg === "1" ? "claudio" : "lekssey";
-            if (regionKey) {
-                const currentList = window.db[window.currentTab][window.currentMonthKey][regionKey] || [];
-                currentList.push({ name: name.toUpperCase(), status: {} });
-                set(ref(rdb, `data/${window.currentTab}/${window.currentMonthKey}/${regionKey}`), currentList);
+        window.addStoreToAllMonths = async (storeName, regionKey) => {
+            const tabs = ['MGL', 'QUEBRA', 'MESA'];
+            for (let t of tabs) {
+                if(!window.db[t]) continue;
+                for (let month in window.db[t]) {
+                    if (month >= window.currentMonthKey) {
+                        let list = window.db[t][month][regionKey] || [];
+                        if (!list.find(s => s.name === storeName)) {
+                            list.push({ name: storeName.toUpperCase(), status: {} });
+                            set(ref(rdb, `data/${t}/${month}/${regionKey}`), list);
+                        }
+                    }
+                }
             }
         };
 
-        // NOVA FUNÇÃO: EXCLUIR LOJA
-        window.deleteStore = (region, storeName) => {
-            if (confirm(`⚠️ TEM CERTEZA que deseja EXCLUIR a loja ${storeName}?\nTodos os dados deste mês serão perdidos.`)) {
+        window.addNewStore = async () => {
+            const { value: name } = await Swal.fire({
+                title: 'Cadastrar Nova Loja',
+                input: 'text',
+                inputLabel: 'Nome da Nova Unidade (Ex: 020-NOVALOJA)',
+                inputPlaceholder: 'Digite o código e nome',
+                showCancelButton: true,
+                confirmButtonText: 'Próximo',
+                cancelButtonText: 'Cancelar'
+            });
+
+            if (!name) return;
+
+            const { value: reg } = await Swal.fire({
+                title: 'Qual Regional?',
+                input: 'select',
+                inputOptions: {
+                    'claudio': 'Regional Claudio',
+                    'lekssey': 'Regional Lekssey'
+                },
+                inputPlaceholder: 'Selecione a Regional',
+                showCancelButton: true,
+                confirmButtonText: 'Salvar',
+                cancelButtonText: 'Cancelar'
+            });
+
+            if (reg) {
+                await window.addStoreToAllMonths(name, reg);
+                Swal.fire({ icon: 'success', title: 'Loja Cadastrada!', text: 'Ela aparecerá neste e nos próximos meses.', timer: 2500, showConfirmButton: false });
+            }
+        };
+
+        window.deleteStore = async (region, storeName) => {
+            const result = await Swal.fire({
+                title: `Excluir loja ${storeName}?`,
+                text: "Todos os dados deste mês serão perdidos.",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#bc4749',
+                confirmButtonText: 'Sim, excluir!',
+                cancelButtonText: 'Cancelar'
+            });
+
+            if (result.isConfirmed) {
                 let currentList = window.db[window.currentTab][window.currentMonthKey][region];
                 const newList = currentList.filter(s => s.name !== storeName);
                 set(ref(rdb, `data/${window.currentTab}/${window.currentMonthKey}/${region}`), newList);
+                Swal.fire({ icon: 'success', title: 'Loja Excluída', timer: 1500, showConfirmButton: false });
             }
         };
 
@@ -229,11 +289,10 @@
                 if (isHidden) tr.className = 'hidden-store';
 
                 let wd = 0, red = 0;
-                // Coluna da loja com botão de exclusão
                 let cells = `
                     <td class="nome-loja">
                         <span class="btn-delete" onclick="deleteStore('${region}', '${store.name}')" title="Excluir Loja">🗑️</span>
-                        <span onclick="toggleStoreVisibility('${store.name}')">${store.name}</span>
+                        <span onclick="toggleStoreVisibility('${store.name}')" class="cursor-pointer">${store.name}</span>
                     </td>`;
                 
                 for (let i = 1; i <= daysInMonth; i++) {
@@ -245,7 +304,7 @@
                     if (st.type === 'R') { c = 'bg-nao-executado'; red++; }
                     if (st.type === 'Y') c = 'bg-justificado';
                     if (dw !== 0 && (dw !== 6 || allowSat)) wd++;
-                    cells += `<td class="${c} cursor-pointer" onclick="toggle('${region}', '${store.name}', ${i})"></td>`;
+                    cells += `<td class="${c} cursor-pointer hover:opacity-75" onclick="toggle('${region}', '${store.name}', ${i})"></td>`;
                 }
                 const meta = wd > 0 ? Math.round(100 - ((red/wd)*100)) : 100;
                 regionalSum += meta;
@@ -255,7 +314,7 @@
             document.getElementById(`meta-${region}`).innerText = `MÉDIA: ${Math.round(regionalSum / (sortedStores.length || 1))}%`;
         }
 
-        window.toggle = (region, storeName, day) => {
+        window.toggle = async (region, storeName, day) => {
             const [year, month] = window.currentMonthKey.split('-').map(Number);
             const dw = new Date(year, month - 1, day).getDay();
             if (dw === 0 || (dw === 6 && !window.fdsSettings[window.currentTab])) return;
@@ -267,15 +326,51 @@
             const currentObj = store.status?.[day] || { type: undefined };
             let nextType, qty = 0, reason = "";
 
-            if (!currentObj.type) nextType = 'G';
+            if (!currentObj.type) {
+                nextType = 'G';
+            } 
             else if (currentObj.type === 'G') {
-                nextType = 'R';
-                qty = prompt("Qtd itens não feitos:") || 0;
-                reason = prompt("Motivo:") || "";
+                const { value: formValues } = await Swal.fire({
+                    title: 'Relatar Pendência',
+                    html:
+                        '<input id="swal-qty" type="number" class="swal2-input" placeholder="Quantidade de itens">' +
+                        '<input id="swal-reason" type="text" class="swal2-input" placeholder="Motivo da Pendência">',
+                    focusConfirm: false,
+                    showCancelButton: true,
+                    confirmButtonText: 'Salvar',
+                    cancelButtonText: 'Cancelar',
+                    preConfirm: () => {
+                        return [
+                            document.getElementById('swal-qty').value,
+                            document.getElementById('swal-reason').value
+                        ]
+                    }
+                });
+                
+                if (formValues) {
+                    nextType = 'R'; 
+                    qty = formValues[0]; 
+                    reason = formValues[1];
+                } else return;
+                
             } else if (currentObj.type === 'R') {
-                nextType = 'Y';
-                reason = prompt("Justificativa:") || "";
-            } else nextType = null;
+                const { value: just } = await Swal.fire({
+                    title: 'Adicionar Justificativa',
+                    input: 'text',
+                    inputPlaceholder: 'Digite a justificativa...',
+                    showCancelButton: true,
+                    confirmButtonText: 'Justificar',
+                    cancelButtonText: 'Cancelar'
+                });
+                
+                if (just) {
+                    nextType = 'Y'; 
+                    reason = just;
+                } else return;
+                
+            } else {
+                nextType = null;
+            }
 
             set(ref(rdb, `data/${window.currentTab}/${window.currentMonthKey}/${region}/${sIdx}/status/${day}`), nextType ? { type: nextType, qty, reason } : null);
         };
@@ -287,11 +382,25 @@
 
         window.showAllStores = () => { set(ref(rdb, `hiddenStores/${window.currentTab}`), []); };
 
-        window.toggleStoreVisibility = (name) => {
+        window.toggleStoreVisibility = async (name) => {
             let list = [...(window.hiddenStoresData[window.currentTab] || [])];
-            if (list.includes(name)) list = list.filter(n => n !== name);
-            else if(confirm(`Ocultar ${name}?`)) list.push(name);
-            set(ref(rdb, `hiddenStores/${window.currentTab}`), list);
+            if (list.includes(name)) {
+                list = list.filter(n => n !== name);
+                set(ref(rdb, `hiddenStores/${window.currentTab}`), list);
+            } else {
+                const result = await Swal.fire({
+                    title: `Ocultar Loja?`,
+                    text: `Deseja esconder ${name} temporariamente?`,
+                    icon: 'question',
+                    showCancelButton: true,
+                    confirmButtonText: 'Ocultar',
+                    cancelButtonText: 'Cancelar'
+                });
+                if (result.isConfirmed) {
+                    list.push(name);
+                    set(ref(rdb, `hiddenStores/${window.currentTab}`), list);
+                }
+            }
         };
 
         function updateDashboard() {
@@ -325,38 +434,199 @@
             `;
         }
 
-        window.takeScreenshot = async () => {
-            const canvas = await html2canvas(document.getElementById('capture-area'), { scale: 2 });
-            const link = document.createElement('a');
-            link.download = `Relatorio_${window.currentMonthKey}.png`;
-            link.href = canvas.toDataURL();
-            link.click();
-        };
-
         window.generatePDF = () => {
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF('l', 'mm', 'a4');
             const tabData = window.db[window.currentTab][window.currentMonthKey];
             const allowSat = window.fdsSettings[window.currentTab];
+            
             doc.setFontSize(18);
             doc.text(`Relatório de Gestão - ${window.currentTab} - ${window.currentMonthKey}`, 14, 20);
+            
             const rows = [];
+            const details = []; 
             const allSorted = sortStores([...tabData.claudio, ...tabData.lekssey]);
+            
+            const days = new Date(...window.currentMonthKey.split('-'), 0).getDate();
+            const [year, month] = window.currentMonthKey.split('-');
+
             allSorted.forEach(s => {
                 let red = 0, wd = 0, vol = 0;
-                const days = new Date(...window.currentMonthKey.split('-'), 0).getDate();
                 for(let i=1; i<=days; i++) {
-                    const dw = new Date(...window.currentMonthKey.split('-').map((v,idx)=>idx===1?v-1:v), i).getDay();
+                    const dw = new Date(year, parseInt(month)-1, i).getDay();
                     if (dw !== 0 && (dw !== 6 || allowSat)) {
                         wd++;
-                        if(s.status?.[i]?.type === 'R') { red++; vol += parseFloat(s.status[i].qty || 0); }
+                        if(s.status?.[i]?.type === 'R') { 
+                            red++; 
+                            vol += parseFloat(s.status[i].qty || 0); 
+                            details.push([s.name, `${String(i).padStart(2, '0')}/${month}`, s.status[i].reason || 'Motivo não informado']);
+                        }
                     }
                 }
                 const meta = wd > 0 ? Math.round(100 - ((red/wd)*100)) : 100;
                 rows.push([s.name, `${meta}%`, red, vol]);
             });
+            
             doc.autoTable({ startY: 30, head: [['Loja', 'Meta %', 'Dias Pendentes', 'Volume Pendente']], body: rows });
+            
+            if (details.length > 0) {
+                doc.addPage();
+                doc.setFontSize(16);
+                doc.text(`Detalhamento de Pendências (Motivos) - ${window.currentTab}`, 14, 20);
+                doc.autoTable({ startY: 30, head: [['Loja', 'Dia', 'Motivo / Justificativa']], body: details });
+            }
+
             doc.save(`Gestao_${window.currentTab}.pdf`);
+        };
+
+        // NOVA IMPORTAÇÃO COM ESCOLHA DE DIA E LEITURA EMPILHADA
+        window.importXLSX = async (event) => {
+            const file = event.target.files[0];
+            if(!file) return;
+
+            // 1. Pergunta o dia exato da importação
+            const [year, month] = window.currentMonthKey.split('-').map(Number);
+            const daysInMonth = new Date(year, month, 0).getDate();
+            const currentDay = new Date().getDate();
+            
+            const { value: selectedDayStr } = await Swal.fire({
+                title: 'Escolha o Dia',
+                text: `Para qual dia do mês ${month}/${year} deseja importar os dados?`,
+                input: 'number',
+                inputValue: currentDay,
+                inputAttributes: {
+                    min: 1,
+                    max: daysInMonth,
+                    step: 1
+                },
+                showCancelButton: true,
+                confirmButtonText: 'Continuar',
+                cancelButtonText: 'Cancelar'
+            });
+
+            if (!selectedDayStr) {
+                event.target.value = ''; // Reseta input caso o usuário cancele
+                return;
+            }
+
+            const targetDay = parseInt(selectedDayStr, 10);
+            
+            Swal.fire({title: 'Analisando Planilha...', allowOutsideClick: false, didOpen: () => Swal.showLoading()});
+            
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, {type: 'array'});
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    
+                    // Lendo em modo array (header: 1) para capturar o layout empilhado perfeitamente
+                    const json = XLSX.utils.sheet_to_json(sheet, {header: 1});
+                    
+                    let storeCategories = {};
+                    let importedStoreNames = new Set();
+                    let currentStore = null;
+
+                    json.forEach(row => {
+                        if (!row || !row[0]) return;
+                        
+                        let cellValue = String(row[0]).trim().toUpperCase();
+                        
+                        // Pula linhas que são cabeçalhos ou totalizadores
+                        if (cellValue.includes("EMPRESA") || cellValue.includes("CATEGORIA") || cellValue.startsWith("TOTAL:")) {
+                            return; 
+                        }
+
+                        // Verifica se o texto segue o padrão de código de loja (ex: 001-AFL, 502-CA-SNP)
+                        if (/^\d{3}-/.test(cellValue)) {
+                            currentStore = cellValue;
+                            importedStoreNames.add(currentStore);
+                            if (!storeCategories[currentStore]) storeCategories[currentStore] = [];
+                        } else if (currentStore) {
+                            // Se já encontrou uma loja, o que vier abaixo é salvo como categoria dela
+                            storeCategories[currentStore].push(cellValue);
+                        }
+                    });
+
+                    let claudio = window.db[window.currentTab]?.[window.currentMonthKey]?.claudio || [];
+                    let lekssey = window.db[window.currentTab]?.[window.currentMonthKey]?.lekssey || [];
+                    let allKnownStores = [...claudio.map(s=>s.name), ...lekssey.map(s=>s.name)];
+
+                    // Lojas novas encontradas
+                    for (let impStore of importedStoreNames) {
+                        if (!allKnownStores.includes(impStore)) {
+                            Swal.close(); 
+                            const result = await Swal.fire({
+                                title: 'Loja Desconhecida',
+                                text: `A loja ${impStore} não está na sua lista. Deseja cadastrar?`,
+                                icon: 'question',
+                                showCancelButton: true,
+                                confirmButtonText: 'Sim',
+                                cancelButtonText: 'Não'
+                            });
+                            
+                            if (result.isConfirmed) {
+                                const regResult = await Swal.fire({
+                                    title: 'De qual Regional ela é?',
+                                    input: 'select',
+                                    inputOptions: { 'claudio': 'Regional Claudio', 'lekssey': 'Regional Lekssey' },
+                                    showCancelButton: true,
+                                    confirmButtonText: 'Salvar'
+                                });
+                                
+                                if (regResult.isConfirmed && regResult.value) {
+                                    await window.addStoreToAllMonths(impStore, regResult.value);
+                                    allKnownStores.push(impStore);
+                                }
+                            }
+                            Swal.fire({title: 'Continuando Análise...', allowOutsideClick: false, didOpen: () => Swal.showLoading()});
+                        }
+                    }
+
+                    // Processa as categorias usando o DIA ESCOLHIDO
+                    claudio = window.db[window.currentTab]?.[window.currentMonthKey]?.claudio || [];
+                    lekssey = window.db[window.currentTab]?.[window.currentMonthKey]?.lekssey || [];
+                    
+                    const validCategories = ["AÇOUGUE E PEIXARIA", "F.L.V.", "PERECÍVEIS"];
+                    
+                    const processList = (list, region) => {
+                        list.forEach((storeObj, sIdx) => {
+                            let cats = storeCategories[storeObj.name] || []; 
+                            let missing = [];
+                            
+                            validCategories.forEach(vc => {
+                                if (!cats.some(c => c.includes(vc))) missing.push(vc);
+                            });
+                            
+                            if (missing.length > 0) {
+                                let reason = missing.length > 1 
+                                    ? `Não teve baixa nas categorias: ${missing.join(", ")}` 
+                                    : `Não teve baixa na categoria ${missing[0]}`;
+                                
+                                set(ref(rdb, `data/${window.currentTab}/${window.currentMonthKey}/${region}/${sIdx}/status/${targetDay}`), {
+                                    type: 'R', 
+                                    qty: missing.length,
+                                    reason: reason 
+                                });
+                            } else {
+                                set(ref(rdb, `data/${window.currentTab}/${window.currentMonthKey}/${region}/${sIdx}/status/${targetDay}`), {
+                                    type: 'G'
+                                });
+                            }
+                        });
+                    };
+
+                    processList(claudio, 'claudio');
+                    processList(lekssey, 'lekssey');
+                    
+                    Swal.fire({ icon: 'success', title: 'Importação Finalizada!', text: `Dados validados e salvos no dia ${targetDay}.`, timer: 2500, showConfirmButton: false });
+                } catch(err) {
+                    console.error(err);
+                    Swal.fire('Erro', 'Ocorreu um erro ao ler o arquivo XLSX.', 'error');
+                }
+            };
+            reader.readAsArrayBuffer(file);
+            event.target.value = ''; 
         };
 
         document.getElementById('monthPicker').value = window.currentMonthKey;
